@@ -16,6 +16,7 @@ class UniformQuantizer(BaseQuantizer):
         self.scale, self.zero_point = self.observer.get_quantization_params(
             *args, **kwargs)
 
+    # Note: You can do quant as simple as quant(input, scale, zeropoint) where the input is a floating point number - question is what can call a quantizer? Where is it held?
     def quant(self, inputs, scale=None, zero_point=None):
         if scale is None:
             scale = self.scale
@@ -24,11 +25,13 @@ class UniformQuantizer(BaseQuantizer):
         range_shape = self.get_reshape_range(inputs)
         scale = scale.reshape(range_shape)
         zero_point = zero_point.reshape(range_shape)
+        # Note - the real quantization problem
         outputs = inputs / scale + zero_point
         outputs = outputs.round().clamp(self.bit_type.lower_bound,
                                         self.bit_type.upper_bound)
         return outputs
 
+    # Note: you can also dequantize as easy as quant(input, scale, zeropoint).
     def dequantize(self, inputs, scale=None, zero_point=None):
         if scale is None:
             scale = self.scale

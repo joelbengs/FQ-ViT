@@ -7,6 +7,14 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+'''
+Does this code convert to low precision? No.
+The code is designed to load weights from a .npz file (a file format used by numpy to store numerical data) and apply them to a PyTorch model. The weights are kept in their original precision throughout this process.
+
+The function _n2p(w, t=True) is used to convert numpy arrays to PyTorch tensors, but it does not change the data type of the weights. The function torch.from_numpy(w) is used, which creates a tensor from a numpy ndarray without changing the data type.
+
+The function adapt_input_conv(in_chans, conv_weight) does perform some operations on the weights, but these are designed to adapt the weights for models with different numbers of input channels, not to reduce their precision.
+'''
 
 @torch.no_grad()
 def load_weights_from_npz(model,

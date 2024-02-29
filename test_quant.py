@@ -87,6 +87,10 @@ def main():
 
     device = torch.device(args.device)
     cfg = Config(args.ptf, args.lis, args.quant_method)
+
+    # Note: This is where the model is created. 
+    I# Argument --model=vit_base gets translated to vit_base_patch16_224 which calls the function vit_base_patch16_224 in /models/vit_quant.py
+    
     model = str2model(args.model)(pretrained=True, cfg=cfg)
     model = model.to(device)
 
@@ -113,7 +117,6 @@ def main():
     # Data
     traindir = os.path.join(args.data, 'train')
     valdir = os.path.join(args.data, 'val')
-
     val_dataset = datasets.ImageFolder(valdir, val_transform)
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
@@ -128,6 +131,7 @@ def main():
     # define loss function (criterion)
     criterion = nn.CrossEntropyLoss().to(device)
 
+    # LET'S QUANTIZE!
     if args.quant:
         train_dataset = datasets.ImageFolder(traindir, train_transform)
         train_loader = torch.utils.data.DataLoader(
@@ -138,25 +142,24 @@ def main():
             pin_memory=True,
             drop_last=True,
         )
-        # Get calibration set.
+        # Get calibration set: The first few (calib_iter) batches of training data
         image_list = []
         for i, (data, target) in enumerate(train_loader):
-            if i == args.calib_iter:
-                break
-            data = data.to(device)
-            image_list.append(data)
-
+            if i == args.calib_iter: break  # default is 10 iterations
+            data = data.to(device)          # move data to GPU
+            image_list.append(data)         # append each batch
+        
         print('Calibrating...')
-        model.model_open_calibrate()
+        model.model_open_calibrate()                            # sets calibrate = true for all 'relevant' modules, i.e. [QConv2d, QLinear, QAct, QIntSoftmax]
         with torch.no_grad():
-            for i, image in enumerate(image_list):
-                if i == len(image_list) - 1:
+            for i, image in enumerate(image_list):              # for each batch of calibration data
+                if i == len(image_list) - 1:                    # if last batch, set last_calibrate = true for all relevant modules
                     # This is used for OMSE method to
                     # calculate minimum quantization error
                     model.model_open_last_calibrate()
-                output = model(image)
-        model.model_close_calibrate()
-        model.model_quant()
+                output = model(image)                           # feed forward
+        model.model_close_calibrate()                           # sets calibrate = false for all reelvant modules
+        model.model_quant()                                     # just sets module.quant = true (or = 'int'). Doesn't alter any weights!
 
     print('Validating...')
     val_loss, val_prec1, val_prec5 = validate(args, val_loader, model,

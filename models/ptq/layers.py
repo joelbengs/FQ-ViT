@@ -109,7 +109,7 @@ class QLinear(nn.Linear):
         weight = self.quantizer(self.weight)
         return F.linear(x, weight, self.bias)
 
-
+# Note: a module of quantized activation?
 class QAct(nn.Module):
 
     def __init__(self,

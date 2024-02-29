@@ -226,6 +226,10 @@ class VisionTransformer(nn.Module):
 
         self.cfg = cfg
         self.input_quant = input_quant
+
+        ######################################################################
+        #           ViT architecture: input embedd and patching              #
+        ######################################################################
         if input_quant:
             self.qact_input = QAct(quant=quant,
                                    calibrate=calibrate,
@@ -277,6 +281,10 @@ class VisionTransformer(nn.Module):
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)
                ]  # stochastic depth decay rule
+        
+        ######################################################################
+        #                      ViT architecture: Blocks                      #
+        ######################################################################
         self.blocks = nn.ModuleList([
             Block(dim=embed_dim,
                   num_heads=num_heads,
@@ -310,7 +318,9 @@ class VisionTransformer(nn.Module):
         else:
             self.pre_logits = nn.Identity()
 
-        # Classifier head
+        ######################################################################
+        #                 ViT architecture: Classifier Head                  #
+        ######################################################################
         self.head = (QLinear(self.num_features,
                              num_classes,
                              quant=quant,
@@ -351,6 +361,11 @@ class VisionTransformer(nn.Module):
         self.head = (nn.Linear(self.embed_dim, num_classes)
                      if num_classes > 0 else nn.Identity())
 
+    ######################################################################
+    #                     quantization and calibration                   #
+    #                    (shifts attributes true/false)                  #
+    ######################################################################
+
     def model_quant(self):
         for m in self.modules():
             if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax]:
@@ -379,37 +394,56 @@ class VisionTransformer(nn.Module):
             if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax]:
                 m.calibrate = False
 
+
+    ######################################################################
+    #                            ViT Forward                             #
+    ######################################################################
+                
     def forward_features(self, x):
         B = x.shape[0]
 
+        #quantization of input
         if self.input_quant:
             x = self.qact_input(x)
 
+        # patch embedd
         x = self.patch_embed(x)
-
         cls_tokens = self.cls_token.expand(
             B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)
         x = self.qact_embed(x)
         x = x + self.qact_pos(self.pos_embed)
+
+        # First activation
         x = self.qact1(x)
 
+        # pos drop?
         x = self.pos_drop(x)
 
+        # Inference through blocks + quantization!
+        # for each block, get 
         for i, blk in enumerate(self.blocks):
+            # first block uses the quantizer from qact1
+            # otherwise use the quantizer from the previous block
             last_quantizer = self.qact1.quantizer if i == 0 else self.blocks[
                 i - 1].qact4.quantizer
+            # inference, passing the quantizer
             x = blk(x, last_quantizer)
 
+        # normillization + quantizers
         x = self.norm(x, self.blocks[-1].qact4.quantizer,
                       self.qact2.quantizer)[:, 0]
+        
+        # qact2
         x = self.qact2(x)
+
+        # identityLayer
         x = self.pre_logits(x)
         return x
 
     def forward(self, x):
-        x = self.forward_features(x)
-        x = self.head(x)
+        x = self.forward_features(x) # includes quantization during inference
+        x = self.head(x) # includes quantization during inference
         x = self.act_out(x)
         return x
 
