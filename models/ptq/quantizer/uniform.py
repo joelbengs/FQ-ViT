@@ -25,7 +25,6 @@ class UniformQuantizer(BaseQuantizer):
         range_shape = self.get_reshape_range(inputs)
         scale = scale.reshape(range_shape)
         zero_point = zero_point.reshape(range_shape)
-        # Note - the real quantization problem
         outputs = inputs / scale + zero_point
         outputs = outputs.round().clamp(self.bit_type.lower_bound,
                                         self.bit_type.upper_bound)
@@ -42,3 +41,7 @@ class UniformQuantizer(BaseQuantizer):
         zero_point = zero_point.reshape(range_shape)
         outputs = (inputs - zero_point) * scale
         return outputs
+    
+    # forward() is definined in class BaseQuantizer(nn.Module):
+    # output = self.quant(input)
+    # return self.dequantize(input)

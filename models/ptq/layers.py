@@ -7,7 +7,8 @@ from .bit_type import BIT_TYPE_DICT
 from .observer import build_observer
 from .quantizer import build_quantizer
 
-
+# Normal convolutional layer, hardcoded to int8 when quant toggle is turned on
+# either FP32 conv2d pass or int8 conv2d pass
 class QConv2d(nn.Conv2d):
 
     def __init__(self,
@@ -43,7 +44,6 @@ class QConv2d(nn.Conv2d):
         self.calibration_mode = calibration_mode
         self.observer_str = observer_str
         self.quantizer_str = quantizer_str
-
         self.module_type = 'conv_weight'
         self.observer = build_observer(self.observer_str, self.module_type,
                                        self.bit_type, self.calibration_mode)
@@ -51,10 +51,13 @@ class QConv2d(nn.Conv2d):
                                          self.observer, self.module_type)
 
     def forward(self, x):
+        # calibrate
         if self.calibrate:
             self.quantizer.observer.update(self.weight)
             if self.last_calibrate:
                 self.quantizer.update_quantization_params(x)
+
+        # FP32 conv2d pass through
         if not self.quant:
             return F.conv2d(
                 x,
@@ -65,16 +68,28 @@ class QConv2d(nn.Conv2d):
                 self.dilation,
                 self.groups,
             )
+        
+        # conv2d pass through with quantized weight vector
         weight = self.quantizer(self.weight)
-        return F.conv2d(x, weight, self.bias, self.stride, self.padding,
-                        self.dilation, self.groups)
+        return F.conv2d(
+                x,
+                weight,
+                self.bias,
+                self.stride,
+                self.padding,
+                self.dilation,
+                self.groups
+            )
 
 
+# A single fully connected layer in a neural network.
+# When quantization is toggled ON, the FP32 weights are quantized+dequantized before inference.
+# width of layer is specified at init.
 class QLinear(nn.Linear):
 
     def __init__(self,
-                 in_features,
-                 out_features,
+                 in_features, # expected number of inputs, i.e. the number of conenctions to the previous layer
+                 out_features, # number of neurons in this layer. The weight from neuron i to neuron j will be self.weight[i,j]
                  bias=True,
                  quant=False,
                  calibrate=False,
@@ -100,16 +115,22 @@ class QLinear(nn.Linear):
                                          self.observer, self.module_type)
 
     def forward(self, x):
+        # calibration
         if self.calibrate:
             self.quantizer.observer.update(self.weight)
             if self.last_calibrate:
                 self.quantizer.update_quantization_params(x)
+        # FP pass through
         if not self.quant:
             return F.linear(x, self.weight, self.bias)
+        
+        # quantized weight vector pass through
         weight = self.quantizer(self.weight)
         return F.linear(x, weight, self.bias)
 
-# Note: a module of quantized activation?
+# This module simply quantizes (weight or sample) tensors, nothing else. No ReLU or similar is applied.
+# A tensor coming from inference or weights will be quantized by it's quantizer object, then imediately dequantized by the same object.
+# The tensor always retains FP32, but suffers artificall information loss, if quant toggle is turned on. With quant toggle off, it is just passed through.
 class QAct(nn.Module):
 
     def __init__(self,
@@ -129,7 +150,6 @@ class QAct(nn.Module):
         self.calibration_mode = calibration_mode
         self.observer_str = observer_str
         self.quantizer_str = quantizer_str
-
         self.module_type = 'activation'
         self.observer = build_observer(self.observer_str, self.module_type,
                                        self.bit_type, self.calibration_mode)
@@ -147,12 +167,16 @@ class QAct(nn.Module):
         x = self.quantizer(x)
         return x
 
-
+# The papers novel IntLayerNormalization
+# if self.mode = 'ln', it just a forward through a F.layer_norm
 class QIntLayerNorm(nn.LayerNorm):
 
-    def __init__(self, normalized_shape, eps=1e-5, elementwise_affine=True):
-        super(QIntLayerNorm, self).__init__(normalized_shape, eps,
-                                            elementwise_affine)
+    def __init__(
+            self, 
+            normalized_shape, 
+            eps=1e-5, 
+            elementwise_affine=True):
+        super(QIntLayerNorm, self).__init__(normalized_shape, eps, elementwise_affine)
         assert isinstance(normalized_shape, int)
         self.mode = 'ln'
 
@@ -162,11 +186,7 @@ class QIntLayerNorm(nn.LayerNorm):
         M = torch.clamp(torch.floor(x * torch.pow(2, N)), 0, 2 ** bit - 1)
         return M, N
 
-    def forward(self,
-                x,
-                in_quantizer=None,
-                out_quantizer=None,
-                in_scale_expand=1):
+    def forward(self, x, in_quantizer=None, out_quantizer=None, in_scale_expand=1):
         if self.mode == 'ln':
             x = F.layer_norm(x, self.normalized_shape, self.weight, self.bias,
                              self.eps)
@@ -206,6 +226,10 @@ class QIntLayerNorm(nn.LayerNorm):
         return x
 
 
+# Three versions of softmax
+# Normal softmax in FP
+# Normal softmax in FP followed by quantization + dequantization of the resulting inference tensor, using either uniform or log
+# The papers novel softmax quantization method, using log2
 class QIntSoftmax(nn.Module):
 
     def __init__(self,
@@ -227,7 +251,6 @@ class QIntSoftmax(nn.Module):
         self.calibration_mode = calibration_mode
         self.observer_str = observer_str
         self.quantizer_str = quantizer_str
-
         self.module_type = 'activation'
         self.observer = build_observer(self.observer_str, self.module_type,
                                        self.bit_type, self.calibration_mode)
@@ -277,6 +300,8 @@ class QIntSoftmax(nn.Module):
         return exp_int, exp_int_sum
 
     def forward(self, x, scale):
+
+        # special log_i_softmax quantization method
         if self.log_i_softmax and scale is not None:
             exp_int, exp_int_sum = self.int_softmax(x, scale)
             softmax_out = torch.round(exp_int_sum / exp_int)
@@ -287,12 +312,19 @@ class QIntSoftmax(nn.Module):
             deq_softmax[mask] = 0
             return deq_softmax
         else:
+            # forward pass through tensor.softmax, without quantization
             x = x.softmax(dim=-1)
+
+            #calibrate
             if self.calibrate:
                 self.quantizer.observer.update(x)
                 if self.last_calibrate:
                     self.quantizer.update_quantization_params(x)
+
+            # FP return
             if not self.quant:
                 return x
+            
+            # quantization of sample tensor after processing
             x = self.quantizer(x)
             return x

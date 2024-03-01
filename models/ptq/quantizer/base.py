@@ -33,12 +33,16 @@ class BaseQuantizer(nn.Module):
     def update_quantization_params(self, *args, **kwargs):
         pass
 
+    # abstract
     def quant(self, inputs, scale=None, zero_point=None):
         raise NotImplementedError
 
+    # abstract
     def dequantize(self, inputs, scale=None, zero_point=None):
         raise NotImplementedError
 
+    # Here it is, the most low level forward method! Model inference cases a chain of forward methods, all the way down here.
+    # the incoming weight is quantized, then dequantized again - all to cause artificall information loss
     def forward(self, inputs):
         outputs = self.quant(inputs)
         outputs = self.dequantize(outputs)

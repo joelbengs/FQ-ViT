@@ -196,6 +196,10 @@ class VisionTransformer(nn.Module):
         https://arxiv.org/abs/2010.11929
     """
 
+    ######################################################################
+    #                       ViT architecture build                       #
+    ######################################################################
+
     def __init__(self,
                  img_size=224,
                  patch_size=16,
@@ -408,8 +412,7 @@ class VisionTransformer(nn.Module):
 
         # patch embedd
         x = self.patch_embed(x)
-        cls_tokens = self.cls_token.expand(
-            B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
+        cls_tokens = self.cls_token.expand(B, -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
         x = self.qact_embed(x)
         x = x + self.qact_pos(self.pos_embed)
@@ -420,15 +423,12 @@ class VisionTransformer(nn.Module):
         # pos drop?
         x = self.pos_drop(x)
 
-        # Inference through blocks + quantization!
-        # for each block, get 
-        for i, blk in enumerate(self.blocks):
-            # first block uses the quantizer from qact1
-            # otherwise use the quantizer from the previous block
-            last_quantizer = self.qact1.quantizer if i == 0 else self.blocks[
-                i - 1].qact4.quantizer
-            # inference, passing the quantizer
-            x = blk(x, last_quantizer)
+        # Inference through blocks + quantization
+        # first block uses the quantizer from qact1
+        # otherwise use the quantizer from the previous blocl
+        for i, block in enumerate(self.blocks):
+            last_quantizer = self.qact1.quantizer if i == 0 else self.blocks[i - 1].qact4.quantizer
+            x = block(x, last_quantizer) # inference, passing the quantizer
 
         # normillization + quantizers
         x = self.norm(x, self.blocks[-1].qact4.quantizer,
@@ -553,6 +553,7 @@ def vit_base_patch16_224(pretrained=False,
         url = 'https://storage.googleapis.com/vit_models/augreg/' + \
             'B_16-i21k-300ep-lr_0.001-aug_medium1-wd_0.1-do_0.0-sd_0.0--imagenet2012-steps_20k-lr_0.01-res_224.npz'
 
+        # seems to be loading the weights in full precision.
         load_weights_from_npz(model, url, check_hash=True)
     return model
 
